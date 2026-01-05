@@ -1,0 +1,37 @@
+# ===== Python & Jupyter =====
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# ===== Conda / Environment =====
+miniconda3/
+.env
+*.log
+
+# ===== Large datasets / third-party repos =====
+MiDaS/
+RIDCP_dehazing-master/
+afo/
+afo_fog/
+glibc-2.32/
+
+# ===== CUDA / system files =====
+cuda-keyring_*.deb
+
+# ===== Training outputs =====
+runs/
+outputs/
+checkpoints/
+wandb/
+
+# ===== Data =====
+data/
+datasets/
+*.zip
+*.tar
+*.tar.gz
+*.pth
+*.pt
+*.ckpt
+

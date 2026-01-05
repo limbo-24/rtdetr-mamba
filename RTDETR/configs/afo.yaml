@@ -1,0 +1,37 @@
+# path: /root/autodl-tmp/afo
+
+# # train: images                 # 注意：相对于path
+# # val: images                   # 注意：相对于path
+# # test: images
+
+# train: /root/autodl-tmp/afo/train.json  # COCO 格式的 JSON 文件路径
+# val: /root/autodl-tmp/afo/val.json      # COCO 格式的 JSON 文件路径
+# test: /root/autodl-tmp/afo/test.json    # COCO 格式的 JSON 文件路径
+
+
+# names:
+#   0: human
+#   1: wind/sup-board
+#   2: boat
+#   3: bouy
+#   4: sailboat
+#   5: kayak
+
+path: ../../autodl-tmp/afo
+
+# train: images                 # 注意：相对于path
+# val: images                   # 注意：相对于path
+# test: images
+
+train: images # COCO 格式的 JSON 文件路径
+val: images      # COCO 格式的 JSON 文件路径
+test:     # COCO 格式的 JSON 文件路径
+
+
+names:
+  0: human
+  1: wind/sup-boardimages
+  2: boat
+  3: bouy
+  4: sailboat
+  5: kayak

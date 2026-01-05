@@ -1,0 +1,49 @@
+## 只需要执行两行代码，一键运行 RT-DETR 项目
+
+RT-DETR 官方项目地址：https://github.com/ultralytics/ultralytics
+
+---
+
+## **全网最简单上手的一键运行 **官方RT-DETR** 项目运行流程**🚀️
+
+环境已经配置好，一键训练即可
+
+---
+
+### 第一步：打开控制台，命令行输入
+
+```python
+cd RTDETR
+```
+
+### 第二步：训练代码，输入
+
+```python
+python train_rtdetr.py --cfg ultralytics/cfg/models/rt-detr/rtdetr-l.yaml
+```
+
+即可以开始训练了
+
+
+### 第三步：推理代码，输入
+
+```python
+python predict_rtdetr.py
+```
+
+---
+
+默认使用coco128数据集作为验证，有需要可以换成自己的数据集路径进行训练
+
+可以根据自己使用的数据集进行修改train_rtdetr.py里面的参数
+
+训练代码
+修改数据集路径和网络模型权重路径
+
+## PS: 关于YOLOv8项目镜像地址：
+
+https://www.codewithgpu.com/i/ultralytics/ultralytics/yolov8
+
+## PS: 关于YOLO11项目镜像地址：
+
+https://www.codewithgpu.com/i/ultralytics/ultralytics/yolo11
