@@ -20,7 +20,7 @@ __all__ = (
     "parse_model",
     "yaml_model_load",
     "guess_model_task",
-    "guess_model_scale",q
+    "guess_model_scale",
     "torch_safe_load",
     "DetectionModel",
     "SegmentationModel",

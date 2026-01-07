@@ -6,6 +6,9 @@ import re
 import types
 from copy import deepcopy
 from pathlib import Path
+# --- 在 tasks.py 头部添加这行 by dvd---
+from ultralytics.nn.modules.wf_didnet_modules import DWT, VSSBlock, HighResMambaDehazeHead, PhysicalGuidanceModule, SemanticFeedbackModule, SimAM, MCAM
+
 
 import torch
 import torch.nn as nn
@@ -565,28 +568,68 @@ class RTDETRDetectionModel(DetectionModel):
             [loss[k].detach() for k in ["loss_giou", "loss_class", "loss_bbox"]], device=img.device
         )
 
-    def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None):
+#     def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None):
+#         """
+#         Perform a forward pass through the model.
+
+#         Args:
+#             x (torch.Tensor): The input tensor.
+#             profile (bool, optional): If True, profile the computation time for each layer. Defaults to False.
+#             visualize (bool, optional): If True, save feature maps for visualization. Defaults to False.
+#             batch (dict, optional): Ground truth data for evaluation. Defaults to None.
+#             augment (bool, optional): If True, perform data augmentation during inference. Defaults to False.
+#             embed (list, optional): A list of feature vectors/embeddings to return.
+
+#         Returns:
+#             (torch.Tensor): Model's output tensor.
+#         """
+#         y, dt, embeddings = [], [], []  # outputs
+#         for m in self.model[:-1]:  # except the head part
+#             if m.f != -1:  # if not from previous layer
+#                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+#             if profile:
+#                 self._profile_one_layer(m, x, dt)
+#             x = m(x)  # run
+#             y.append(x if m.i in self.save else None)  # save output
+#             if visualize:
+#                 feature_visualization(x, m.type, m.i, save_dir=visualize)
+#             if embed and m.i in embed:
+#                 embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+#                 if m.i == max(embed):
+#                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
+#         head = self.model[-1]
+#         # x = head([y[j] for j in head.f], batch)  # head inference
+        
+#         # --- 修改开始 ---
+#         # 检查 head.f 是否为列表，如果是整数则包装成列表
+#         source_layers = head.f if isinstance(head.f, (list, tuple)) else [head.f]
+#         x = head([y[j] for j in source_layers], batch)
+#         # --- 修改结束 ---
+#         return x
+
+    #单独训练去雾分支
+    def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None, mode='detect'):
         """
-        Perform a forward pass through the model.
-
-        Args:
-            x (torch.Tensor): The input tensor.
-            profile (bool, optional): If True, profile the computation time for each layer. Defaults to False.
-            visualize (bool, optional): If True, save feature maps for visualization. Defaults to False.
-            batch (dict, optional): Ground truth data for evaluation. Defaults to None.
-            augment (bool, optional): If True, perform data augmentation during inference. Defaults to False.
-            embed (list, optional): A list of feature vectors/embeddings to return.
-
-        Returns:
-            (torch.Tensor): Model's output tensor.
+        Modified predict for RTDETR to support dehazing pretraining.
+        Added 'mode' parameter.
         """
         y, dt, embeddings = [], [], []  # outputs
-        for m in self.model[:-1]:  # except the head part
+        for m in self.model:  # except the head part (RTDETRDecoder)
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
             if profile:
                 self._profile_one_layer(m, x, dt)
-            x = m(x)  # run
+            
+            x = m(x)  # run module
+            
+            # --- 新增：去雾预训练退出逻辑 ---
+            # 如果处于去雾训练模式，且当前层是 HighResMambaDehazeHead
+            if mode == 'train_dehaze' and isinstance(m, HighResMambaDehazeHead):
+                # 根据之前的设计，该模块返回 (transmittance, dehazed_img)
+                # 预训练只需要 dehazed_img (index 1)
+                return x[1] if isinstance(x, (list, tuple)) else x
+            # ---------------------------
+
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
@@ -594,8 +637,12 @@ class RTDETRDetectionModel(DetectionModel):
                 embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
                 if m.i == max(embed):
                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        
+        # 正常的检测头推理 (RTDETRDecoder)
         head = self.model[-1]
-        x = head([y[j] for j in head.f], batch)  # head inference
+        source_layers = head.f if isinstance(head.f, (list, tuple)) else [head.f]
+        x = head([y[j] for j in source_layers], batch)
+        
         return x
 
 
@@ -1061,6 +1108,24 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is iRMB:
             c2 = args[0]
             args = [ch[f], *args]
+        # === 新增代码开始 告诉解析器：遇到 DWT 层时，输出通道数要乘以 4 by dvd===
+        elif m is DWT:
+            c1 = ch[f]
+            c2 = c1 * 4  # DWT 将空间尺寸减半，通道数变为 4 倍 (LL, LH, HL, HH)
+        elif m is HighResMambaDehazeHead:
+            c1 = ch[f]
+            # args[0] 是 in_ch, 我们可以强制它等于上一层的输出 c1
+            args = [c1, *args[1:]] 
+            # 去雾头通常不作为骨干继续向下传特征（或者返回透射率），
+            # 这里暂时设为 c1 或根据您的 forward 返回值设定，
+            # 关键是保证参数解析不报错。
+            c2 = c1 
+        elif m in {PhysicalGuidanceModule, SemanticFeedbackModule}:
+             # 交互模块通常保持通道数不变，或者由 args 指定
+             c1 = ch[f]
+             c2 = c1 
+             args = [c1, *args[1:]]
+        # === 新增代码结束 ===
         else:
             c2 = ch[f]
 
