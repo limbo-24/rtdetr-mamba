@@ -98,22 +98,33 @@ except ImportError:
 class BaseModel(nn.Module):
     """The BaseModel class serves as a base class for all the models in the Ultralytics YOLO family."""
 
+#     def forward(self, x, *args, **kwargs):
+#         """
+#         Perform forward pass of the model for either training or inference.
+
+#         If x is a dict, calculates and returns the loss for training. Otherwise, returns predictions for inference.
+
+#         Args:
+#             x (torch.Tensor | dict): Input tensor for inference, or dict with image tensor and labels for training.
+#             *args (Any): Variable length argument list.
+#             **kwargs (Any): Arbitrary keyword arguments.
+
+#         Returns:
+#             (torch.Tensor): Loss if x is a dict (training), or network predictions (inference).
+#         """
+#         if isinstance(x, dict):  # for cases of training and validating while training.
+#             return self.loss(x, *args, **kwargs)
+#         return self.predict(x, *args, **kwargs)
     def forward(self, x, *args, **kwargs):
-        """
-        Perform forward pass of the model for either training or inference.
+        mode = kwargs.get("mode", None)
 
-        If x is a dict, calculates and returns the loss for training. Otherwise, returns predictions for inference.
+        # 🔥 去雾任务强制分流（这是关键）
+        if mode == "train_dehaze":
+            return self.predict(x, mode="train_dehaze")
 
-        Args:
-            x (torch.Tensor | dict): Input tensor for inference, or dict with image tensor and labels for training.
-            *args (Any): Variable length argument list.
-            **kwargs (Any): Arbitrary keyword arguments.
-
-        Returns:
-            (torch.Tensor): Loss if x is a dict (training), or network predictions (inference).
-        """
-        if isinstance(x, dict):  # for cases of training and validating while training.
+        if isinstance(x, dict):
             return self.loss(x, *args, **kwargs)
+
         return self.predict(x, *args, **kwargs)
 
     def predict(self, x, profile=False, visualize=False, augment=False, embed=None):
@@ -607,43 +618,143 @@ class RTDETRDetectionModel(DetectionModel):
 #         # --- 修改结束 ---
 #         return x
 
-    #单独训练去雾分支
+#     #单独训练去雾分支
+#     def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None, mode='detect'):
+#         """
+#         Modified predict for RTDETR to support dehazing pretraining.
+#         Added 'mode' parameter.
+#         """
+#         y, dt, embeddings = [], [], []  # outputs
+#         for m in self.model:  # except the head part (RTDETRDecoder)
+#             if m.f != -1:  # if not from previous layer
+#                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+#             if profile:
+#                 self._profile_one_layer(m, x, dt)
+            
+#             x = m(x)  # run module
+            
+#             # --- 新增：去雾预训练退出逻辑 ---
+#             # 如果处于去雾训练模式，且当前层是 HighResMambaDehazeHead
+#             if mode == 'train_dehaze' and isinstance(m, HighResMambaDehazeHead):
+#                 # 根据之前的设计，该模块返回 (transmittance, dehazed_img)
+#                 # 预训练只需要 dehazed_img (index 1)
+#                 return x[1] if isinstance(x, (list, tuple)) else x
+#             # ---------------------------
+
+#             y.append(x if m.i in self.save else None)  # save output
+#             if visualize:
+#                 feature_visualization(x, m.type, m.i, save_dir=visualize)
+#             if embed and m.i in embed:
+#                 embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+#                 if m.i == max(embed):
+#                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        
+#         # 正常的检测头推理 (RTDETRDecoder)
+#         head = self.model[-1]
+#         source_layers = head.f if isinstance(head.f, (list, tuple)) else [head.f]
+#         x = head([y[j] for j in source_layers], batch)
+        
+#         return x
+    
+#     def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None, mode='detect'):
+#         """
+#         RT-DETR 预测/推理逻辑增强版：支持去雾预训练拦截。
+#         """
+#         y, dt, embeddings = [], [], []
+#         for m in self.model:
+#             # 处理多输入层 (Concat, Decoder 等)
+#             if m.f != -1:
+#                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
+            
+#             if profile:
+#                 self._profile_one_layer(m, x, dt)
+            
+#             # --- 核心修改：执行并拦截 ---
+#             if isinstance(m, RTDETRDecoder):
+#                 # 检测头需要 batch 参数来做 denoising (训练时)
+#                 x = m(x, batch)
+#             else:
+#                 x = m(x)  # 运行普通模块 (Backbone, Head, DehazeHead)
+
+#             # 拦截逻辑 A: 如果是去雾模式，且刚跑完 HighResMambaDehazeHead
+#             if mode == 'train_dehaze' and isinstance(m, HighResMambaDehazeHead):
+#                 # 假设返回 (trans_map, recon_img, feature), 预训练通常取 recon_img (index 1)
+#                 return x[1] if isinstance(x, (list, tuple)) else x
+
+#             # 拦截逻辑 B: 如果是检测模式，跑完 Decoder 就返回，不再跑后面的去雾头
+#             if mode == 'detect' and isinstance(m, RTDETRDecoder):
+#                 return x
+#             # -------------------------
+
+#             y.append(x if m.i in self.save else None)
+            
+#             if visualize:
+#                 feature_visualization(x, m.type, m.i, save_dir=visualize)
+#             if embed and m.i in embed:
+#                 embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))
+#                 if m.i == max(embed):
+#                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        
+#         return x
     def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None, mode='detect'):
         """
-        Modified predict for RTDETR to support dehazing pretraining.
-        Added 'mode' parameter.
+        [修复版] 使用类名字符串匹配，强制拦截去雾分支。
         """
         y, dt, embeddings = [], [], []  # outputs
-        for m in self.model:  # except the head part (RTDETRDecoder)
-            if m.f != -1:  # if not from previous layer
-                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+        
+        # 调试标记：只打印一次
+        if mode == 'train_dehaze' and not hasattr(self, '_debug_printed'):
+            print(f"\n🔍 [DEBUG] 正在使用字符串匹配模式寻找去雾头...")
+            self._debug_printed = True
+
+        for m in self.model:
+            # 1. 多输入处理
+            if m.f != -1:
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
+            
             if profile:
                 self._profile_one_layer(m, x, dt)
             
-            x = m(x)  # run module
-            
-            # --- 新增：去雾预训练退出逻辑 ---
-            # 如果处于去雾训练模式，且当前层是 HighResMambaDehazeHead
-            if mode == 'train_dehaze' and isinstance(m, HighResMambaDehazeHead):
-                # 根据之前的设计，该模块返回 (transmittance, dehazed_img)
-                # 预训练只需要 dehazed_img (index 1)
-                return x[1] if isinstance(x, (list, tuple)) else x
-            # ---------------------------
+            # --- 获取当前层的类名 (字符串) ---
+            m_name = m.__class__.__name__
 
-            y.append(x if m.i in self.save else None)  # save output
+            # --- 2. 核心拦截逻辑 ---
+            
+            # A. 如果是检测头 (RTDETRDecoder)
+            if 'RTDETRDecoder' in m_name:
+                if mode == 'train_dehaze':
+                    # 去雾模式下，绝对禁止进入检测头
+                    continue 
+                x = m(x, batch)
+            
+            # B. 如果是去雾头 (HighResMambaDehazeHead)
+            # 🔥 使用字符串匹配，解决 isinstance 失效问题 🔥
+            elif 'HighResMambaDehazeHead' in m_name:
+                x = m(x)
+                if mode == 'train_dehaze':
+                    if hasattr(self, '_debug_printed'): 
+                        print(f"✅ [DEBUG] 成功命中去雾头: {m_name}，正在返回图像...")
+                    
+                    # 假设输出是 (trans, recon, feat)，取 recon (index 1)
+                    if isinstance(x, (list, tuple)) and len(x) >= 2:
+                        return x[1]
+                    return x
+            
+            # C. 普通层
+            else:
+                x = m(x)
+
+            y.append(x if m.i in self.save else None)
+            
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
             if embed and m.i in embed:
-                embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+                embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))
                 if m.i == max(embed):
                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
         
-        # 正常的检测头推理 (RTDETRDecoder)
-        head = self.model[-1]
-        source_layers = head.f if isinstance(head.f, (list, tuple)) else [head.f]
-        x = head([y[j] for j in source_layers], batch)
-        
         return x
+
 
 
 class WorldModel(DetectionModel):
@@ -1115,7 +1226,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is HighResMambaDehazeHead:
             c1 = ch[f]
             # args[0] 是 in_ch, 我们可以强制它等于上一层的输出 c1
-            args = [c1, *args[1:]] 
+            args = [c1, *args] 
             # 去雾头通常不作为骨干继续向下传特征（或者返回透射率），
             # 这里暂时设为 c1 或根据您的 forward 返回值设定，
             # 关键是保证参数解析不报错。
@@ -1124,7 +1235,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
              # 交互模块通常保持通道数不变，或者由 args 指定
              c1 = ch[f]
              c2 = c1 
-             args = [c1, *args[1:]]
+             args = [c1, *args]
         # === 新增代码结束 ===
         else:
             c2 = ch[f]

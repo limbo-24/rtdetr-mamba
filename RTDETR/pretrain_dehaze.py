@@ -26,24 +26,54 @@ def ssim(img1, img2, window_size=11, size_average=True):
 # ---------------------------------------------------------
 # 2. Haze4K 数据集类
 # ---------------------------------------------------------
+# class Haze4KDataset(Dataset):
+#     def __init__(self, root_dir, split='train', size=640):
+#         self.hazy_path = os.path.join(root_dir, split, 'hazy')
+#         self.clear_path = os.path.join(root_dir, split, 'clear')
+#         self.filenames = [f for f in os.listdir(self.hazy_path) if f.endswith(('.png', '.jpg'))]
+#         self.transform = transforms.Compose([
+#             transforms.Resize((size, size)),
+#             transforms.ToTensor(),
+#         ])
+
+#     def __getitem__(self, index):
+#         fname = self.filenames[index]
+#         hazy_img = self.transform(Image.open(os.path.join(self.hazy_path, fname)).convert('RGB'))
+#         clear_img = self.transform(Image.open(os.path.join(self.clear_path, fname)).convert('RGB'))
+#         return hazy_img, clear_img
+
+#     def __len__(self):
+#         return len(self.filenames)
+    
+# --- 修改后的 Dataset 类 ---
 class Haze4KDataset(Dataset):
     def __init__(self, root_dir, split='train', size=640):
-        self.hazy_path = os.path.join(root_dir, split, 'hazy')
-        self.clear_path = os.path.join(root_dir, split, 'clear')
-        self.filenames = [f for f in os.listdir(self.hazy_path) if f.endswith(('.png', '.jpg'))]
+        # 对应你之前 check_dataset.py 看到的文件夹名
+        self.haze_path = os.path.join(root_dir, split, 'haze') 
+        self.gt_path = os.path.join(root_dir, split, 'gt')
+        
+        # 以 haze 文件夹为基准
+        self.haze_filenames = [f for f in os.listdir(self.haze_path) if f.endswith(('.png', '.jpg'))]
+        
         self.transform = transforms.Compose([
             transforms.Resize((size, size)),
             transforms.ToTensor(),
         ])
 
     def __getitem__(self, index):
-        fname = self.filenames[index]
-        hazy_img = self.transform(Image.open(os.path.join(self.hazy_path, fname)).convert('RGB'))
-        clear_img = self.transform(Image.open(os.path.join(self.clear_path, fname)).convert('RGB'))
-        return hazy_img, clear_img
+        haze_fname = self.haze_filenames[index]
+        
+        # 核心逻辑：提取 ID 进行匹配 (1000_0.74_1.6.png -> 1000.png)
+        img_id = haze_fname.split('_')[0]
+        gt_fname = f"{img_id}.png"
+        
+        haze_img = self.transform(Image.open(os.path.join(self.haze_path, haze_fname)).convert('RGB'))
+        gt_img = self.transform(Image.open(os.path.join(self.gt_path, gt_fname)).convert('RGB'))
+        
+        return haze_img, gt_img
 
     def __len__(self):
-        return len(self.filenames)
+        return len(self.haze_filenames)
 
 # ---------------------------------------------------------
 # 3. 预训练主循环
@@ -69,21 +99,43 @@ def train():
 
     for epoch in range(30): # 预训练 30 轮通常足够
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
+        # --- 修改后的训练循环片断 ---
         for hazy, clear in pbar:
             hazy, clear = hazy.to(device), clear.to(device)
             
             optimizer.zero_grad()
             
-            # 核心：传入 mode='train_dehaze' 触发 tasks.py 里的拦截逻辑
-            recon_img = model(hazy, mode='train_dehaze')
+            # 这里的 outputs 对应 HighResMambaDehazeHead 的返回
+            # 假设顺序是 (T_map, Recon, Feat)，我们需要索引 1
+            outputs = model(hazy, mode='train_dehaze')
             
-            # 混合 Loss
+            if isinstance(outputs, (list, tuple)):
+                recon_img = outputs[1] # 取 Recon 图像
+            else:
+                recon_img = outputs # 防御性编程
+
+            # 计算 Loss
             loss_l1 = criterion_l1(recon_img, clear)
             loss_ssim = 1 - ssim(recon_img, clear)
-            total_loss = loss_l1 + 0.2 * loss_ssim # SSIM 权重设为 0.2
+            total_loss = loss_l1 + 0.2 * loss_ssim
             
             total_loss.backward()
             optimizer.step()
+#         for hazy, clear in pbar:
+#             hazy, clear = hazy.to(device), clear.to(device)
+            
+#             optimizer.zero_grad()
+            
+#             # 核心：传入 mode='train_dehaze' 触发 tasks.py 里的拦截逻辑
+#             recon_img = model(hazy, mode='train_dehaze')
+            
+#             # 混合 Loss
+#             loss_l1 = criterion_l1(recon_img, clear)
+#             loss_ssim = 1 - ssim(recon_img, clear)
+#             total_loss = loss_l1 + 0.2 * loss_ssim # SSIM 权重设为 0.2
+            
+#             total_loss.backward()
+#             optimizer.step()
             
             pbar.set_postfix(Loss=f"{total_loss.item():.4f}", L1=f"{loss_l1.item():.4f}")
 

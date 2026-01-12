@@ -334,7 +334,70 @@ class MCAM(nn.Module):
         
         return x * y_c * a_h * a_w
 
-# -------------------------------------------------------------------------
+# # -------------------------------------------------------------------------
+# # 5. 去雾头: HighResMambaDehazeHead
+# # -------------------------------------------------------------------------
+# class HighResMambaDehazeHead(nn.Module):
+#     def __init__(self, in_ch=128, d_state=16, depth=2):
+#         super().__init__()
+#         self.proj = nn.Sequential(nn.Conv2d(in_ch, in_ch, 1), nn.BatchNorm2d(in_ch), nn.SiLU())
+        
+#         # 使用真实的 VSSBlock
+#         self.mamba_layers = nn.Sequential(*[
+#             VSSBlock(hidden_dim=in_ch, d_state=d_state) for _ in range(depth)
+#         ])
+        
+#         self.mid_conv = nn.Sequential(nn.Conv2d(in_ch, 64, 3, 1, 1), nn.BatchNorm2d(64), nn.ReLU())
+#         self.t_head = nn.Sequential(nn.Conv2d(64, 1, 1), nn.Sigmoid())
+        
+#         # 重构分支 (训练时用)
+#         self.recon = nn.Sequential(
+#             self._pixel_shuffle_block(64, 32), # H/8
+#             self._pixel_shuffle_block(32, 16), # H/4
+#             self._pixel_shuffle_block(16, 16), # H/2
+#             self._pixel_shuffle_block(16, 8),  # H
+#             nn.Conv2d(8, 3, 3, 1, 1),
+#             nn.Sigmoid()
+#         )
+
+#     def _pixel_shuffle_block(self, in_c, out_c):
+#         return nn.Sequential(
+#             nn.Conv2d(in_c, out_c * 4, 3, 1, 1),
+#             nn.PixelShuffle(2),
+#             nn.ReLU(inplace=True)
+#         )
+
+# #     def forward(self, x_ll):
+# #         x = self.proj(x_ll)
+# #         x = self.mamba_layers(x)
+# #         feat = self.mid_conv(x)
+# #         t_map = self.t_head(feat)
+        
+# #         recon_img = None
+# #         if self.training:
+# #             recon_img = self.recon(feat)
+            
+# #         return t_map, recon_img, feat
+    
+#     def forward(self, x_ll, batch=None):
+#         # 1. 兼容性处理：如果输入是列表（来自 tasks.py 的修改），解包取出第一个元素
+#         if isinstance(x_ll, list):
+#             x_ll = x_ll[0]
+            
+#         # 2. 正常的去雾逻辑
+#         x = self.proj(x_ll)
+#         x = self.mamba_layers(x)
+#         feat = self.mid_conv(x)
+#         t_map = self.t_head(feat)
+        
+#         # 3. 重构分支
+#         recon_img = None
+#         if self.training:
+#             recon_img = self.recon(feat)
+            
+#         # 返回结果
+#         return t_map, recon_img, feat
+
 # 5. 去雾头: HighResMambaDehazeHead
 # -------------------------------------------------------------------------
 class HighResMambaDehazeHead(nn.Module):
@@ -350,7 +413,7 @@ class HighResMambaDehazeHead(nn.Module):
         self.mid_conv = nn.Sequential(nn.Conv2d(in_ch, 64, 3, 1, 1), nn.BatchNorm2d(64), nn.ReLU())
         self.t_head = nn.Sequential(nn.Conv2d(64, 1, 1), nn.Sigmoid())
         
-        # 重构分支 (训练时用)
+        # 重构分支
         self.recon = nn.Sequential(
             self._pixel_shuffle_block(64, 32), # H/8
             self._pixel_shuffle_block(32, 16), # H/4
@@ -367,20 +430,8 @@ class HighResMambaDehazeHead(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-#     def forward(self, x_ll):
-#         x = self.proj(x_ll)
-#         x = self.mamba_layers(x)
-#         feat = self.mid_conv(x)
-#         t_map = self.t_head(feat)
-        
-#         recon_img = None
-#         if self.training:
-#             recon_img = self.recon(feat)
-            
-#         return t_map, recon_img, feat
-    
     def forward(self, x_ll, batch=None):
-        # 1. 兼容性处理：如果输入是列表（来自 tasks.py 的修改），解包取出第一个元素
+        # 1. 兼容性处理：如果输入是列表，解包取出第一个元素
         if isinstance(x_ll, list):
             x_ll = x_ll[0]
             
@@ -390,12 +441,10 @@ class HighResMambaDehazeHead(nn.Module):
         feat = self.mid_conv(x)
         t_map = self.t_head(feat)
         
-        # 3. 重构分支
-        recon_img = None
-        if self.training:
-            recon_img = self.recon(feat)
+        # 3. 重构分支 (修复：去掉 self.training 判断，确保验证时也能输出图像)
+        recon_img = self.recon(feat)  # <--- 这里改了
             
-        # 返回结果
+        # 返回结果 (Tuple: 透射率, 恢复图, 特征)
         return t_map, recon_img, feat
 
 # -------------------------------------------------------------------------
