@@ -696,51 +696,147 @@ class RTDETRDetectionModel(DetectionModel):
 #                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
         
 #         return x
-    def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None, mode='detect'):
-        """
-        [修复版] 使用类名字符串匹配，强制拦截去雾分支。
-        """
-        y, dt, embeddings = [], [], []  # outputs
+
+#     def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None, mode='detect'):
+#         """
+#         [修复版] 使用类名字符串匹配，强制拦截去雾分支。
+#         """
+#         y, dt, embeddings = [], [], []  # outputs
         
-        # 调试标记：只打印一次
-        if mode == 'train_dehaze' and not hasattr(self, '_debug_printed'):
-            print(f"\n🔍 [DEBUG] 正在使用字符串匹配模式寻找去雾头...")
-            self._debug_printed = True
+#         # 调试标记：只打印一次
+#         if mode == 'train_dehaze' and not hasattr(self, '_debug_printed'):
+#             print(f"\n🔍 [DEBUG] 正在使用字符串匹配模式寻找去雾头...")
+#             self._debug_printed = True
+
+#         for m in self.model:
+#             # 1. 多输入处理
+#             if m.f != -1:
+#                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
+            
+#             if profile:
+#                 self._profile_one_layer(m, x, dt)
+            
+#             # --- 获取当前层的类名 (字符串) ---
+#             m_name = m.__class__.__name__
+
+#             # --- 2. 核心拦截逻辑 ---
+            
+#             # A. 如果是检测头 (RTDETRDecoder)
+#             if 'RTDETRDecoder' in m_name:
+#                 if mode == 'train_dehaze':
+#                     # 去雾模式下，绝对禁止进入检测头
+#                     continue 
+#                 x = m(x, batch)
+            
+#             # B. 如果是去雾头 (HighResMambaDehazeHead)
+#             # 🔥 使用字符串匹配，解决 isinstance 失效问题 🔥
+#             elif 'HighResMambaDehazeHead' in m_name:
+#                 x = m(x)
+#                 if mode == 'train_dehaze':
+#                     if hasattr(self, '_debug_printed'): 
+#                         print(f"✅ [DEBUG] 成功命中去雾头: {m_name}，正在返回图像...")
+                    
+#                     # 假设输出是 (trans, recon, feat)，取 recon (index 1)
+#                     if isinstance(x, (list, tuple)) and len(x) >= 2:
+#                         return x[1]
+#                     return x
+            
+#             # C. 普通层
+#             else:
+#                 x = m(x)
+
+#             y.append(x if m.i in self.save else None)
+            
+#             if visualize:
+#                 feature_visualization(x, m.type, m.i, save_dir=visualize)
+#             if embed and m.i in embed:
+#                 embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))
+#                 if m.i == max(embed):
+#                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        
+#         return x
+
+    def predict(self, x, profile=False, visualize=False, batch=None, augment=False, embed=None, mode='detect'):
+        y, dt, embeddings = [], [], []
+        
+        # 🟢 缓存变量：专门存储去雾分支的特征
+        saved_dehaze_feat = None
 
         for m in self.model:
-            # 1. 多输入处理
             if m.f != -1:
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
             
             if profile:
                 self._profile_one_layer(m, x, dt)
             
-            # --- 获取当前层的类名 (字符串) ---
             m_name = m.__class__.__name__
 
-            # --- 2. 核心拦截逻辑 ---
-            
-            # A. 如果是检测头 (RTDETRDecoder)
-            if 'RTDETRDecoder' in m_name:
-                if mode == 'train_dehaze':
-                    # 去雾模式下，绝对禁止进入检测头
-                    continue 
-                x = m(x, batch)
-            
-            # B. 如果是去雾头 (HighResMambaDehazeHead)
-            # 🔥 使用字符串匹配，解决 isinstance 失效问题 🔥
-            elif 'HighResMambaDehazeHead' in m_name:
-                x = m(x)
-                if mode == 'train_dehaze':
-                    if hasattr(self, '_debug_printed'): 
-                        print(f"✅ [DEBUG] 成功命中去雾头: {m_name}，正在返回图像...")
+            # --- 1. 去雾头 (HighResMambaDehazeHead) ---
+#             if 'HighResMambaDehazeHead' in m_name:
+#                 # 运行去雾
+#                 out = m(x) 
+                
+#                 # 如果是预训练模式，直接返回
+#                 if mode == 'train_dehaze':
+#                     if isinstance(out, (list, tuple)): return out[1]
+#                     return out
+                
+#                 # 🔥 检测模式：关键操作
+#                 # if isinstance(out, tuple):
+#                 #     # out[0]: t_map, out[1]: recon_img, out[2]: feat
+#                 #     # 1. 把【清晰图】传给下一层 (级联检测)
+#                 #     x = out[1] 
+#                 #     # 2. 把【去雾隐层特征】存起来，给后面的 PGM 用
+#                 #     saved_dehaze_feat = out[2] 
+#                 if isinstance(out, tuple):
+#                     # out[0]: t_map, out[1]: recon_img, out[2]: feat
                     
-                    # 假设输出是 (trans, recon, feat)，取 recon (index 1)
-                    if isinstance(x, (list, tuple)) and len(x) >= 2:
-                        return x[1]
-                    return x
+#                     # 1. 传递清晰图给 Backbone (也要 detach，防止梯度回传到图像生成过程)
+#                     x = out[1].detach() 
+                    
+#                     # 2. 传递特征给 PGM (🔥 关键：必须 detach，切断计算图，释放 Mamba 显存)
+#                     saved_dehaze_feat = out[2].detach() 
+#                 else:
+#                     x = out # 防御性代码
+            # --- 1. 去雾头 (HighResMambaDehazeHead) ---
+            if 'HighResMambaDehazeHead' in m_name:
+                # 🔥 终极修改：使用 no_grad() 包裹，彻底禁止梯度追踪
+                # 只有在 train_dehaze 模式下才需要梯度，detect 模式下绝对不要！
+                if mode == 'train_dehaze':
+                    out = m(x)
+                    if isinstance(out, (list, tuple)): return out[1]
+                    return out
+                else:
+                    # ✅ Detect 训练模式：强制不记录梯度
+                    with torch.no_grad():
+                        out = m(x)
+                    
+                    if isinstance(out, tuple):
+                        # out[1] 是清晰图，out[2] 是特征
+                        # 即使在 no_grad 下，为了保险起见，依然 detach
+                        x = out[1].detach() 
+                        saved_dehaze_feat = out[2].detach() 
+                    else:
+                        x = out
+
+            # --- 2. 物理引导模块 (PGM) ---
+            elif 'PhysicalGuidanceModule' in m_name:
+                # 这个模块需要两个输入：(当前检测特征, 缓存的去雾特征)
+                if saved_dehaze_feat is not None:
+                    # x 是当前的 Backbone 特征
+                    x = m(x, saved_dehaze_feat)
+                else:
+                    # 理论上不该发生，除非 YAML 顺序错了
+                    print(f"⚠️ Warning: PGM module reached but no dehaze feat found!")
+                    # 如果没特征，PGM 可能会报错，这里假设 m() 能处理单输入或直接跳过
+                    # 建议直接报错检查 YAML
             
-            # C. 普通层
+            # --- 3. 检测头 ---
+            elif 'RTDETRDecoder' in m_name:
+                if mode == 'train_dehaze': continue
+                x = m(x, batch)
+
+            # --- 4. 普通层 ---
             else:
                 x = m(x)
 
@@ -754,7 +850,6 @@ class RTDETRDetectionModel(DetectionModel):
                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
         
         return x
-
 
 
 class WorldModel(DetectionModel):
