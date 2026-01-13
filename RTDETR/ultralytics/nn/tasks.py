@@ -799,25 +799,49 @@ class RTDETRDetectionModel(DetectionModel):
 #                 else:
 #                     x = out # 防御性代码
             # --- 1. 去雾头 (HighResMambaDehazeHead) ---
+            # --- 1. 去雾头 (HighResMambaDehazeHead) ---
             if 'HighResMambaDehazeHead' in m_name:
-                # 🔥 终极修改：使用 no_grad() 包裹，彻底禁止梯度追踪
-                # 只有在 train_dehaze 模式下才需要梯度，detect 模式下绝对不要！
+                # 场景 A: 预训练去雾 (需要梯度)
                 if mode == 'train_dehaze':
                     out = m(x)
                     if isinstance(out, (list, tuple)): return out[1]
                     return out
+                
+                # 场景 B: 级联检测训练 (不需要去雾头的梯度)
                 else:
-                    # ✅ Detect 训练模式：强制不记录梯度
+                    # 1. 开启无梯度模式 (防止构建计算图)
                     with torch.no_grad():
                         out = m(x)
-                    
+                        
                     if isinstance(out, tuple):
-                        # out[1] 是清晰图，out[2] 是特征
-                        # 即使在 no_grad 下，为了保险起见，依然 detach
-                        x = out[1].detach() 
-                        saved_dehaze_feat = out[2].detach() 
+                        # out[1] 是清晰图
+                        if out[1] is None:
+                            # 🚨 紧急避险：如果去雾头没返回图，就用原图硬顶
+                            # 这通常不该发生，除非 wf_didnet_modules.py 没改对
+                            print("⚠️ Warning: Dehaze head returned None image! Using input instead.")
+                            x = x.detach().clone() 
+                        else:
+                            x = out[1].detach().clone()
+                        
+                        saved_dehaze_feat = out[2].detach().clone()
+                        
+                        del out
+                        torch.cuda.empty_cache()
+                    
+#                     if isinstance(out, tuple):
+#                         # out[0]=透射率, out[1]=清晰图, out[2]=特征
+                        
+#                         # 2. 🔥 核心操作：Detach (彻底切断与前向历史的联系)
+#                         # clone() 确保数据独立，detach() 确保没有梯度历史
+#                         x = out[1].detach().clone() 
+#                         saved_dehaze_feat = out[2].detach().clone()
+                        
+#                         # 3. 🔥 强制垃圾回收：销毁原始输出，立即释放 Mamba 占用的 20G 显存
+#                         del out
+#                         # 这是一个比较重的操作，但在显存吃紧时是救命稻草
+#                         torch.cuda.empty_cache() 
                     else:
-                        x = out
+                        x = out.detach() # 防御性代码
 
             # --- 2. 物理引导模块 (PGM) ---
             elif 'PhysicalGuidanceModule' in m_name:

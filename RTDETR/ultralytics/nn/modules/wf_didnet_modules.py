@@ -354,10 +354,16 @@ class HighResMambaDehazeHead(nn.Module):
     # =========================
     # 🔥 关键修改：训练时不重构
     # =========================
-        recon_img = None
-        if not self.training:
-            recon_img = self.recon(feat)
+#     recon_img = None
+#         if not self.training:
+#             recon_img = self.recon(feat)
 
+#         return t_map, recon_img, feat
+    # 重构分支
+        # 🔥 必须无条件生成清晰图，因为它是后续检测网络的输入！
+        recon_img = self.recon(feat) 
+            
+        # 返回结果
         return t_map, recon_img, feat
 
 

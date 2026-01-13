@@ -96,7 +96,7 @@ def train_cascade_pipeline():
     model.train(
     data=data_yaml,
     epochs=30,
-    imgsz=320,        # 不要 640，Mamba 扛不住
+    imgsz=256,        # 不要 640，Mamba 扛不住
     batch=1,
     lr0=1e-4,
     device=0,
