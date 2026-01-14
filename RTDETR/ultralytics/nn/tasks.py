@@ -165,6 +165,16 @@ class BaseModel(nn.Module):
             if profile:
                 self._profile_one_layer(m, x, dt)
             x = m(x)  # run
+            # 🔥🔥🔥 核心修复：如果这是去雾头(Layer 0)，强制切断梯度！🔥🔥🔥
+            # 这样 PGM 拿到的就是一个纯净的 Tensor，不会引发 "Inference tensors" 报错
+            if m.i == 0: 
+            # 判断 x 是否是 Tensor (防止去雾头输出 list/tuple)
+                if isinstance(x, torch.Tensor):
+                    x = x.detach()
+            # 如果输出是列表 (比如多尺度特征)，遍历 detach
+                elif isinstance(x, (list, tuple)):
+                    x = [xi.detach() if isinstance(xi, torch.Tensor) else xi for xi in x]
+
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
@@ -799,25 +809,49 @@ class RTDETRDetectionModel(DetectionModel):
 #                 else:
 #                     x = out # 防御性代码
             # --- 1. 去雾头 (HighResMambaDehazeHead) ---
+            # --- 1. 去雾头 (HighResMambaDehazeHead) ---
             if 'HighResMambaDehazeHead' in m_name:
-                # 🔥 终极修改：使用 no_grad() 包裹，彻底禁止梯度追踪
-                # 只有在 train_dehaze 模式下才需要梯度，detect 模式下绝对不要！
+                # 场景 A: 预训练去雾 (需要梯度)
                 if mode == 'train_dehaze':
                     out = m(x)
                     if isinstance(out, (list, tuple)): return out[1]
                     return out
+                
+                # 场景 B: 级联检测训练 (不需要去雾头的梯度)
                 else:
-                    # ✅ Detect 训练模式：强制不记录梯度
+                    # 1. 开启无梯度模式 (防止构建计算图)
                     with torch.no_grad():
                         out = m(x)
-                    
+                        
                     if isinstance(out, tuple):
-                        # out[1] 是清晰图，out[2] 是特征
-                        # 即使在 no_grad 下，为了保险起见，依然 detach
-                        x = out[1].detach() 
-                        saved_dehaze_feat = out[2].detach() 
+                        # out[1] 是清晰图
+                        if out[1] is None:
+                            # 🚨 紧急避险：如果去雾头没返回图，就用原图硬顶
+                            # 这通常不该发生，除非 wf_didnet_modules.py 没改对
+                            print("⚠️ Warning: Dehaze head returned None image! Using input instead.")
+                            x = x.detach().clone() 
+                        else:
+                            x = out[1].detach().clone()
+                        
+                        saved_dehaze_feat = out[2].detach().clone()
+                        
+                        del out
+                        torch.cuda.empty_cache()
+                    
+#                     if isinstance(out, tuple):
+#                         # out[0]=透射率, out[1]=清晰图, out[2]=特征
+                        
+#                         # 2. 🔥 核心操作：Detach (彻底切断与前向历史的联系)
+#                         # clone() 确保数据独立，detach() 确保没有梯度历史
+#                         x = out[1].detach().clone() 
+#                         saved_dehaze_feat = out[2].detach().clone()
+                        
+#                         # 3. 🔥 强制垃圾回收：销毁原始输出，立即释放 Mamba 占用的 20G 显存
+#                         del out
+#                         # 这是一个比较重的操作，但在显存吃紧时是救命稻草
+#                         torch.cuda.empty_cache() 
                     else:
-                        x = out
+                        x = out.detach() # 防御性代码
 
             # --- 2. 物理引导模块 (PGM) ---
             elif 'PhysicalGuidanceModule' in m_name:
@@ -1223,6 +1257,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         if m in {
             Classify,
             Conv,
+            ResNetLayer,
             ConvTranspose,
             GhostConv,
             Bottleneck,
@@ -1293,8 +1328,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             if m is HGBlock:
                 args.insert(4, n)  # number of repeats
                 n = 1
-        elif m is ResNetLayer:
-            c2 = args[1] if args[3] else args[1] * 4
+        # elif m is ResNetLayer:
+        #     c2 = args[1] if args[3] else args[1] * 4
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
         elif m is Concat:
@@ -1326,11 +1361,47 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             # 这里暂时设为 c1 或根据您的 forward 返回值设定，
             # 关键是保证参数解析不报错。
             c2 = c1 
+        # 🔥 PGM 模块解析逻辑修复版 🔥
         elif m in {PhysicalGuidanceModule, SemanticFeedbackModule}:
-             # 交互模块通常保持通道数不变，或者由 args 指定
-             c1 = ch[f]
-             c2 = c1 
-             args = [c1, *args]
+             # 1. 确定输入通道数 c1 (det_dim)
+             if isinstance(f, list):
+                 c1 = ch[f[0]]
+             else:
+                 c1 = ch[f]
+             c2 = c1 # 输出通道数保持不变
+             
+             # 2. 智能修正参数 (args)
+             # PGM 需要两个参数: [det_dim, dehaze_dim]
+             # det_dim (c1): 来自上一层的通道数 (动态)
+             # dehaze_dim: 去雾特征通道数 (通常是 64)
+             
+             if len(args) == 1:
+                 # 情况 A: YAML 只写了 [64] -> 自动补全为 [c1, 64]
+                 args = [c1, args[0]]
+             elif len(args) == 2:
+                 # 情况 B: YAML 写了 [128, 64] -> 强制修正第一个参数为当前真实的 c1
+                 args[0] = c1
+             else:
+                 # 情况 C: 参数不对，强制重置为默认 [c1, 64]
+                 print(f"⚠️ Warning: PGM args {args} abnormal, forcing fix.")
+                 args = [c1, 64]
+#         elif m in {PhysicalGuidanceModule, SemanticFeedbackModule}:
+#              # 1. 兼容多输入 (List) 情况
+#              if isinstance(f, list):
+#                  c1 = ch[f[0]]  # 取第一个输入(主干特征)的通道数
+#              else:
+#                  c1 = ch[f]
+             
+#              # 2. 设定输出通道数
+#              c2 = c1 
+             
+             # 3. 这里的 args 已经在 YAML 里写全了 [det_dim, dehaze_dim]，不需要再自动插入 c1
+             # args = [c1, *args]  <-- 注释掉这行，防止参数错位！
+        # elif m in {PhysicalGuidanceModule, SemanticFeedbackModule}:
+        #      # 交互模块通常保持通道数不变，或者由 args 指定
+        #      c1 = ch[f]
+        #      c2 = c1 
+             # args = [c1, *args]
         # === 新增代码结束 ===
         else:
             c2 = ch[f]

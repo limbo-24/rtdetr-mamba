@@ -112,7 +112,12 @@ class BaseValidator:
             self.data = trainer.data
             # force FP16 val during training
             self.args.half = self.device.type != "cpu" and trainer.amp
-            model = trainer.ema.ema or trainer.model
+            # 🔥🔥🔥 修复：判空保护 🔥🔥🔥
+            if trainer.ema:
+                model = trainer.ema.ema or trainer.model
+            else:
+                model = trainer.model
+            # model = trainer.ema.ema or trainer.model
             model = model.half() if self.args.half else model.float()
             # self.model = model
             self.loss = torch.zeros_like(trainer.loss_items, device=trainer.device)

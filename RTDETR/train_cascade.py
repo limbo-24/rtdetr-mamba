@@ -32,24 +32,41 @@ def train_cascade_pipeline():
     if dehaze_checkpoint:
         print(f"💉 正在注入去雾权重: {dehaze_checkpoint}")
         try:
-            # 加载 checkpoint
-            ckpt = torch.load(dehaze_checkpoint, map_location='cpu')
+            # 1. 加载 checkpoint
+            chkpt = torch.load(dehaze_checkpoint, map_location='cpu')
             
-            # 提取模型参数 (兼容 ultralytics 的存储格式)
-            ckpt_model = ckpt['model'] if 'model' in ckpt else ckpt
+            # 2. 智能提取参数字典
+            state_dict = None
+            if isinstance(chkpt, dict) and 'model' in chkpt:
+                # 情况 A: chkpt['model'] 是整个模型对象 (包含 .float() 方法)
+                if hasattr(chkpt['model'], 'state_dict'):
+                    state_dict = chkpt['model'].float().state_dict()
+                # 情况 B: chkpt['model'] 只是参数字典 (OrderedDict)
+                else:
+                    state_dict = chkpt['model']
+            else:
+                # 情况 C: chkpt 本身就是参数字典
+                state_dict = chkpt
+                
+            # 3. 🔥 核心过滤逻辑 (只保留 Layer 0) 🔥
+            # 只加载 model.0 (去雾头) 的参数，忽略不匹配的 Backbone/Head
+            dehaze_dict = {}
+            for k, v in state_dict.items():
+                if k.startswith('model.0.') or k.startswith('0.'):
+                    dehaze_dict[k] = v
             
-            # 【关键】strict=False
-            # 因为 ckpt 里只有去雾头的参数，没有 PGM 和 检测头的参数
-            # 这样会只加载匹配的部分 (即 HighResMambaDehazeHead)，忽略不匹配的
-            msg = model.model.load_state_dict(ckpt_model, strict=False)
-            
-            print(f"✅ 权重注入完成!")
-            print(f"   - 匹配键值 (Missing Keys): 很多 (这是正常的，因为还没练检测头)")
-            print(f"   - 意外键值 (Unexpected Keys): {msg.unexpected_keys} (应该为空或很少)")
+            if len(dehaze_dict) == 0:
+                print("⚠️ 警告: 在 Checkpoint 中未找到去雾头(Layer 0)的权重！")
+            else:
+                # 4. 加载过滤后的权重 (strict=False)
+                model.model.load_state_dict(dehaze_dict, strict=False)
+                print(f"✅ 成功仅注入 Layer 0 (去雾头) 权重! (已忽略旧 Backbone)")
+                print(f"   - 注入参数量: {len(dehaze_dict)} 个 Tensor")
             
         except Exception as e:
             print(f"❌ 权重加载失败: {e}")
-            print("   请检查 checkpoint 路径或键值名称是否匹配。")
+            import traceback
+            traceback.print_exc()
             return
 
     # =====================================================================
@@ -95,8 +112,8 @@ def train_cascade_pipeline():
     
     model.train(
     data=data_yaml,
-    epochs=30,
-    imgsz=320,        # 不要 640，Mamba 扛不住
+    epochs=3,
+    imgsz=128,        # 不要 640，Mamba 扛不住
     batch=1,
     lr0=1e-4,
     device=0,

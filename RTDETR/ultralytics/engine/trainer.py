@@ -434,7 +434,10 @@ class BaseTrainer:
             self.run_callbacks("on_train_epoch_end")
             if RANK in {-1, 0}:
                 final_epoch = epoch + 1 >= self.epochs
-                self.ema.update_attr(self.model, include=["yaml", "nc", "args", "names", "stride", "class_weights"])
+                # 🔥🔥🔥 添加 if self.ema: 进行保护 🔥🔥🔥
+                if self.ema:
+                    self.ema.update_attr(self.model, include=["yaml", "nc", "args", "names", "stride", "class_weights"])
+                # self.ema.update_attr(self.model, include=["yaml", "nc", "args", "names", "stride", "class_weights"])
 
                 # Validation
                 if self.args.val or final_epoch or self.stopper.possible_stop or self.stop:
@@ -508,9 +511,56 @@ class BaseTrainer:
 
         return pd.read_csv(self.csv).to_dict(orient="list")
 
+#     def save_model(self):
+#         """Save model training checkpoints with additional metadata."""
+#         import io
+
+#         # Serialize ckpt to a byte buffer once (faster than repeated torch.save() calls)
+#         buffer = io.BytesIO()
+#         torch.save(
+#             {
+#                 "epoch": self.epoch,
+#                 "best_fitness": self.best_fitness,
+#                 "model": None,  # resume and final checkpoints derive from EMA
+#                 "ema": deepcopy(self.ema.ema).half(),
+#                 "updates": self.ema.updates,
+#                 "optimizer": convert_optimizer_state_dict_to_fp16(deepcopy(self.optimizer.state_dict())),
+#                 "train_args": vars(self.args),  # save as dict
+#                 "train_metrics": {**self.metrics, **{"fitness": self.fitness}},
+#                 "train_results": self.read_results_csv(),
+#                 "date": datetime.now().isoformat(),
+#                 "version": __version__,
+#                 "license": "AGPL-3.0 (https://ultralytics.com/license)",
+#                 "docs": "https://docs.ultralytics.com",
+#             },
+#             buffer,
+#         )
+#         serialized_ckpt = buffer.getvalue()  # get the serialized content to save
+
+#         # Save checkpoints
+#         self.last.write_bytes(serialized_ckpt)  # save last.pt
+#         if self.best_fitness == self.fitness:
+#             self.best.write_bytes(serialized_ckpt)  # save best.pt
+#         if (self.save_period > 0) and (self.epoch % self.save_period == 0):
+#             (self.wdir / f"epoch{self.epoch}.pt").write_bytes(serialized_ckpt)  # save epoch, i.e. 'epoch3.pt'
+#         # if self.args.close_mosaic and self.epoch == (self.epochs - self.args.close_mosaic - 1):
+#         #    (self.wdir / "last_mosaic.pt").write_bytes(serialized_ckpt)  # save mosaic checkpoint
+
     def save_model(self):
         """Save model training checkpoints with additional metadata."""
         import io
+
+        # 🔥🔥🔥 修改开始：判空保护逻辑 🔥🔥🔥
+        # 如果 self.ema 存在，我们保存 EMA 权重；如果不存在，我们直接保存主模型权重
+        if self.ema:
+            model_to_save = None  # 标准逻辑：如果有 EMA，'model' 键留空
+            ema_to_save = deepcopy(self.ema.ema).half()
+            updates_to_save = self.ema.updates
+        else:
+            model_to_save = deepcopy(self.model).half() # 备用逻辑：没有 EMA，必须保存主模型！
+            ema_to_save = None
+            updates_to_save = 0
+        # 🔥🔥🔥 修改结束 🔥🔥🔥
 
         # Serialize ckpt to a byte buffer once (faster than repeated torch.save() calls)
         buffer = io.BytesIO()
@@ -518,9 +568,9 @@ class BaseTrainer:
             {
                 "epoch": self.epoch,
                 "best_fitness": self.best_fitness,
-                "model": None,  # resume and final checkpoints derive from EMA
-                "ema": deepcopy(self.ema.ema).half(),
-                "updates": self.ema.updates,
+                "model": model_to_save,       # 👈 使用变量
+                "ema": ema_to_save,           # 👈 使用变量
+                "updates": updates_to_save,   # 👈 使用变量
                 "optimizer": convert_optimizer_state_dict_to_fp16(deepcopy(self.optimizer.state_dict())),
                 "train_args": vars(self.args),  # save as dict
                 "train_metrics": {**self.metrics, **{"fitness": self.fitness}},
@@ -540,8 +590,6 @@ class BaseTrainer:
             self.best.write_bytes(serialized_ckpt)  # save best.pt
         if (self.save_period > 0) and (self.epoch % self.save_period == 0):
             (self.wdir / f"epoch{self.epoch}.pt").write_bytes(serialized_ckpt)  # save epoch, i.e. 'epoch3.pt'
-        # if self.args.close_mosaic and self.epoch == (self.epochs - self.args.close_mosaic - 1):
-        #    (self.wdir / "last_mosaic.pt").write_bytes(serialized_ckpt)  # save mosaic checkpoint
 
     def get_dataset(self):
         """

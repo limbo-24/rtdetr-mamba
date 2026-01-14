@@ -86,3 +86,165 @@ head:
   # =========================================================
   # from: [P3(24), P4(27), P5(30)]
   - [[24, 27, 30], 1, RTDETRDecoder, [nc, 256, 300, 4, 8, 3]]  # 31. 检测输出
+  
+  
+#   # Ultralytics YOLO 🚀, AGPL-3.0 license
+# # RT-DETR-ResNet18 (修复版v2) - 修正了 ResNetLayer 参数顺序
+
+# nc: 5
+# scales:
+#   l: [1.00, 1.00, 1024]
+
+# backbone:
+#   # [from, repeats, module, args]
+  
+#   # 0. 去雾头 (64 ch 输出)
+#   - [-1, 1, HighResMambaDehazeHead, [64, 2]]
+
+#   # 1. Stem (Conv)
+#   - [0, 1, Conv, [64, 7, 2, 3]]
+#   - [-1, 1, nn.MaxPool2d, [3, 2, 1]]
+
+#   # 2. Stage 1 (64 ch)
+#   # args 修正为: [out_channels, kernel=3, stride=1]
+#   # 注意：不同版本的 ultralytics 可能解析逻辑不同，通常是用 standard Conv args
+#   # 这里我们改用最稳的 Conv 堆叠或者 C2f (YOLO风格) 来替代 ResNetLayer 以避免参数歧义
+#   # 但为了保持 ResNet 风格，我们尝试用标准的 ResNetBlock 定义
+#   # 假设 ResNetLayer 接收 [c1, c2, k, s]
+  
+#   - [-1, 2, ResNetLayer, [64, 3, 1]] # 3. 64->64
+
+#   # 3. Stage 2 (128 ch)
+#   - [-1, 2, ResNetLayer, [128, 3, 2]] # 4. 64->128, stride 2
+
+#   # 4. PGM Fusion
+#   - [[-1, 0], 1, PhysicalGuidanceModule, [128, 64]] # 5.
+
+#   # 5. Stage 3 (256 ch)
+#   - [-1, 2, ResNetLayer, [256, 3, 2]] # 6. 128->256, stride 2
+
+#   # 6. Stage 4 (512 ch)
+#   - [-1, 2, ResNetLayer, [512, 3, 2]] # 7. 256->512, stride 2
+
+# head:
+#   # Hybrid Encoder
+#   - [-1, 1, Conv, [256, 1, 1, None, 1, 1, False]] # 8. P5 proj
+#   - [-1, 1, AIFI, [1024, 8]] # 9.
+#   - [-1, 1, Conv, [256, 1, 1]] # 10.
+
+#   - [-1, 1, nn.Upsample, [None, 2, 'nearest']] # 11.
+#   - [6, 1, Conv, [256, 1, 1, None, 1, 1, False]] # 12. P4 proj (input from layer 6)
+#   - [[-2, -1], 1, Concat, [1]] # 13.
+#   - [-1, 3, RepC3, [256, 0.5]] # 14.
+
+#   - [-1, 1, Conv, [256, 1, 1]] # 15.
+#   - [-1, 1, nn.Upsample, [None, 2, 'nearest']] # 16.
+#   - [5, 1, Conv, [256, 1, 1, None, 1, 1, False]] # 17. P3 proj (input from PGM layer 5)
+#   - [[-2, -1], 1, Concat, [1]] # 18.
+#   - [-1, 3, RepC3, [256, 0.5]] # 19. P3 Output
+
+#   # Downsample
+#   - [-1, 1, Conv, [256, 3, 2]] # 20.
+#   - [[-1, 15], 1, Concat, [1]] # 21.
+#   - [-1, 3, RepC3, [256, 0.5]] # 22. P4 Output
+
+#   - [-1, 1, Conv, [256, 3, 2]] # 23.
+#   - [[-1, 10], 1, Concat, [1]] # 24.
+#   - [-1, 3, RepC3, [256, 0.5]] # 25. P5 Output
+
+#   # Decoder
+#   - [[19, 22, 25], 1, RTDETRDecoder, [nc, 256, 300, 4, 8, 3]]
+
+# Ultralytics YOLO 🚀, AGPL-3.0 license
+# RT-DETR-l with Mamba Dehaze & PGM
+# Based on custom config with iRMB
+
+# Ultralytics YOLO 🚀, AGPL-3.0 license
+# RT-DETR-ResNet18 with HighResMambaDehazeHead & PGM
+# 轻量化版本：解决 OOM 问题的终极方案
+
+# nc: 5  # 你的类别数
+# scales:
+#   l: [1.00, 1.00, 1024]
+
+# backbone:
+#   # [from, repeats, module, args]
+  
+#   # ==========================================
+#   # 0. 去雾头 (HighResMambaDehazeHead)
+#   # ==========================================
+#   # Input: Image (3 ch)
+#   # Output: (trans_map, recon_img, dehaze_feat=64ch)
+#   # Mamba 在 64 通道运行，速度快且显存省
+#   - [-1, 1, HighResMambaDehazeHead, [64, 2]]  
+
+#   # ==========================================
+#   # 1. ResNet18 Stem (输入是 Layer 0 的 recon_img)
+#   # ==========================================
+#   - [0, 1, Conv, [64, 7, 2, 3]]  # 1. Conv 7x7
+#   - [-1, 1, nn.MaxPool2d, [3, 2, 1]] # 2. MaxPool 3x3
+
+#   # ==========================================
+#   # 2. ResNet18 Stages (使用 BasicBlock)
+#   # ==========================================
+#   # args: [out_channels, stride, is_basic_block]
+#   # ResNet18/34 使用 BasicBlock (True)
+  
+#   # Stage 1 (Layer 1) -> 64ch
+#   - [-1, 2, ResNetLayer, [64, 1, True]] # 3. P2
+
+#   # Stage 2 (Layer 2) -> 128ch
+#   - [-1, 2, ResNetLayer, [128, 2, True]] # 4. P3 (128ch)
+
+#   # ==========================================
+#   # 3. PGM 融合模块
+#   # ==========================================
+#   # 融合: Backbone P3 (128ch) + Dehaze Feat (64ch)
+#   # 输入索引: [-1 (Layer 4), 0 (Layer 0)]
+#   - [[-1, 0], 1, PhysicalGuidanceModule, [128, 64]] # 5. PGM Output (128ch)
+
+#   # Stage 3 (Layer 3) -> 256ch
+#   - [-1, 2, ResNetLayer, [256, 2, True]] # 6. P4
+
+#   # Stage 4 (Layer 4) -> 512ch
+#   - [-1, 2, ResNetLayer, [512, 2, True]] # 7. P5
+
+# head:
+#   # ==========================================
+#   # 4. Hybrid Encoder (针对 ResNet18 通道调整)
+#   # ==========================================
+#   # 输入: P3(128), P4(256), P5(512)
+#   # 投影目标维度: 256 (hidden_dim)
+
+#   # P5 处理
+#   - [-1, 1, Conv, [256, 1, 1, None, 1, 1, False]]  # 8. input_proj (512->256)
+#   - [-1, 1, AIFI, [256, 8]] # 9. AIFI (Transformer)
+#   - [-1, 1, Conv, [256, 1, 1]]   # 10.
+
+#   # P4 融合 (Upsample P5 + P4)
+#   - [-1, 1, nn.Upsample, [None, 2, 'nearest']] # 11.
+#   - [6, 1, Conv, [256, 1, 1, None, 1, 1, False]] # 12. P4 proj (256->256)
+#   - [[-2, -1], 1, Concat, [1]] # 13.
+#   - [-1, 3, RepC3, [256, 0.5]] # 14.
+
+#   # P3 融合 (Upsample P4 + P3)
+#   - [-1, 1, Conv, [256, 1, 1]]   # 15.
+#   - [-1, 1, nn.Upsample, [None, 2, 'nearest']] # 16.
+#   - [5, 1, Conv, [256, 1, 1, None, 1, 1, False]] # 17. P3 proj (128->256) - 注意来源是 Layer 5 (PGM)
+#   - [[-2, -1], 1, Concat, [1]] # 18.
+#   - [-1, 3, RepC3, [256, 0.5]] # 19. Output P3
+
+#   # 下采样路径 P3 -> P4
+#   - [-1, 1, Conv, [256, 3, 2]] # 20.
+#   - [[-1, 15], 1, Concat, [1]] # 21.
+#   - [-1, 3, RepC3, [256, 0.5]] # 22. Output P4
+
+#   # 下采样路径 P4 -> P5
+#   - [-1, 1, Conv, [256, 3, 2]] # 23.
+#   - [[-1, 10], 1, Concat, [1]] # 24.
+#   - [-1, 3, RepC3, [256, 0.5]] # 25. Output P5
+
+#   # ==========================================
+#   # 5. Decoder (检测头)
+#   # ==========================================
+#   - [[19, 22, 25], 1, RTDETRDecoder, [nc, 256, 300, 4, 8, 3]]
