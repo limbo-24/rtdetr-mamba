@@ -114,7 +114,6 @@ def train_cascade_pipeline():
     data=data_yaml,
     epochs=3,
     imgsz=128,        # 不要 640，Mamba 扛不住
-    batch=1,
     lr0=1e-4,
     device=0,
     amp=True,
